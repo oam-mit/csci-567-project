@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from typing import List, Callable
 import pickle
+from sklearn.model_selection import train_test_split
 
 class Mapping():
     def __init__(self, name, mapping):
@@ -26,23 +27,26 @@ class HousePriceData():
     msSubclass_Map = {index: key for key, index in enumerate([20, 30, 40, 45, 50, 60, 70, 75, 80, 85, 90, 120, 150, 160, 180, 190])}
 
 
-    def __init__(self, path:str):
+    def __init__(self, path:str, x_preprocessors = None, y_preprocessors = None):
         self.__path = path
         self.__df = pd.read_csv(path, keep_default_na=False,na_values=["NA", np.nan, ""])
 
         #Correct spelling mistake
         self.__df["Exterior2nd"] = self.__df["Exterior2nd"].replace({"CmentBd": "CemntBd", "Wd Shng" :"WdShing", "Brk Cmn": "BrkComm"})
         self.__df["MSZoning"] = self.__df["MSZoning"].replace({"C (all)":"C"})
+        self.__x_preprocessors = x_preprocessors
+        self.__y_preprocessors = y_preprocessors
 
 
 
         self.__dropped_columns:List[str] = []
 
     
-    def check_na(self):
+    def check_na(self, print_null_cols = True):
         null_cols = self.__df.columns[self.__df.isna().any()].tolist()
-        for col in null_cols:
-            print(col, sum(self.__df[col].isnull().tolist()))
+        if print_null_cols:
+            for col in null_cols:
+                print(col, sum(self.__df[col].isnull().tolist()))
         
         return null_cols
     
@@ -169,13 +173,51 @@ class HousePriceData():
     def get_dropped_columns(self) ->List[str]:
         return self.__dropped_columns
     
+    def fit_preprocessors(self):
+        X = self.__df.drop("SalePrice", axis=1)
+        Y = self.__df["SalePrice"]
+
+        if self.__x_preprocessors:
+            self.__x_preprocessors.fit(X)
+        if self.__y_preprocessors:
+            self.__y_preprocessors.fit(Y.values.reshape(-1, 1))
+    
     def save_mapping(self, path):
         with open(path, 'wb') as f:
             pickle.dump(self.__mapping, f)
+    
+    def get_x_y(self):
+        X = self.__df.drop("SalePrice", axis=1)
+        Y = self.__df["SalePrice"]
+
+        if self.__x_preprocessors:
+            X = self.__x_preprocessors.transform(X)
+        if self.__y_preprocessors:
+            Y = self.__y_preprocessors.transform(Y.values.reshape(-1, 1))
+        
+        return X,Y
+    
+    def get_train_test_split(self, test_size=0.2):
+        X,Y = self.get_x_y()
+
+        return train_test_split(X, Y, test_size=test_size, random_state=42)
+    
+    def get_processors(self):
+        return self.__x_preprocessors, self.__y_preprocessors
+    
+    def get_columns_to_drop(self, threshold):
+        output_column = 'SalePrice'
+
+        correlations = self.__df.corr(method="pearson")[output_column]
+
+        selected_columns = correlations[(correlations <= threshold) & (correlations >= -threshold)].index.tolist()
+
+        return selected_columns
+
 
 
 class TestingData():
-    def __init__(self, mapping_path:str, data_path, dropped_columns:List[str]) -> None:
+    def __init__(self, mapping_path:str, data_path, dropped_columns:List[str], x_preprocessor= None) -> None:
         self.__mapping_path = mapping_path
     
         with open(mapping_path, 'rb') as f:
@@ -185,6 +227,7 @@ class TestingData():
         self.__na_columns = ["Alley", "BsmtQual", "BsmtCond", "BsmtExposure", "BsmtFinType1", "BsmtFinType2", "FireplaceQu", "GarageType", "GarageFinish", "GarageQual", "GarageCond", "PoolQC", "Fence", "MiscFeature"]
         self.ids = self.__df["Id"].to_list()
         self.__df = self.__df.drop("Id", axis=1)
+        self.__x_preprocessor = x_preprocessor
     
 
     def preprocess_data(self):
@@ -205,6 +248,13 @@ class TestingData():
 
     def get_dataframe(self):
         return self.__df
+    
+    def get_x(self):
+        X = self.__df.values
+        if self.__x_preprocessor is not None:
+            X = self.__x_preprocessor.transform(X)
+        
+        return X
 
     def form_test_file(self, prediction_function:Callable[[], np.ndarray]):
         def write_output():
